@@ -1,4 +1,4 @@
-name: Build EurekaV2 
+name: Build EurekaV2
 on:
   workflow_dispatch:
 
@@ -28,6 +28,15 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      - name: List available config files
+        working-directory: ./kernel
+        run: |
+          echo "=== Danh sách file trong arch/arm64/configs/ ==="
+          ls arch/arm64/configs/ | grep -i "a10\|a20\|a30\|a40" || echo "Không tìm thấy file cấu hình nào"
+          echo ""
+          echo "=== Tìm file có đuôi .config ==="
+          find arch/arm64/configs/ -name "*.config" | head -20
+
       - name: Set Git user
         working-directory: ./kernel
         run: |
@@ -43,7 +52,6 @@ jobs:
       - name: Enable KernelSU in config
         working-directory: ./kernel
         run: |
-          # Thêm vào file cấu hình tương ứng (a10.config, a20.config...)
           echo "CONFIG_KALLSYMS=y" >> arch/arm64/configs/${{ matrix.defconfig }}
           echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/${{ matrix.defconfig }}
           echo "CONFIG_KSU=y" >> arch/arm64/configs/${{ matrix.defconfig }}
@@ -93,11 +101,17 @@ jobs:
           mkdir -p out
           cp arch/arm64/configs/${{ matrix.defconfig }} out/.config
 
+          # Sửa giá trị rỗng của TZDEV (nguyên nhân gây treo Kconfig)
+          sed -i 's/^CONFIG_TZDEV_IWI_EVENT=.*/CONFIG_TZDEV_IWI_EVENT=0/' out/.config
+          sed -i 's/^CONFIG_TZDEV_IWI_PANIC=.*/CONFIG_TZDEV_IWI_PANIC=0/' out/.config
+          grep -q "^CONFIG_TZDEV_IWI_EVENT" out/.config || echo "CONFIG_TZDEV_IWI_EVENT=0" >> out/.config
+          grep -q "^CONFIG_TZDEV_IWI_PANIC" out/.config || echo "CONFIG_TZDEV_IWI_PANIC=0" >> out/.config
+
           # Tắt Mali và thêm cấu hình cần thiết
           {
             echo "# CONFIG_MALI_MIDGARD is not set"
             echo "# CONFIG_MALI_EXYNOS is not set"
-            echo 'CONFIG_LOCALVERSION="-Haubai"'
+            echo "# CONFIG_LOCALVERSION is not set"
             echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
             echo "CONFIG_IMG_GZ_DTB=y"
             echo "# CONFIG_DEBUG_INFO is not set"
@@ -110,6 +124,7 @@ jobs:
         run: |
           export PLATFORM_VERSION=11
           make -j2 O=out ARCH=arm64 \
+            LOCALVERSION="${LOCALVERSION}" \
             CC=${CC} LD=${LD} AR=${AR} NM=${NM} \
             OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} STRIP=${STRIP} \
             CROSS_COMPILE=${CROSS_COMPILE} 2>&1 | tee build.log
