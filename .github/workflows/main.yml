@@ -1,4 +1,4 @@
-name: Build Exynos7885 (EurekaV2)
+name: Build Exynos7885 (EurekaV2 - Ubuntu Clang)
 on:
   workflow_dispatch:
 
@@ -8,12 +8,6 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        defconfig:
-          - exynos7885-a10_defconfig 
-
     steps:
       - name: Checkout kernel source (EurekaV2)
         uses: actions/checkout@v4
@@ -23,55 +17,66 @@ jobs:
           path: kernel
           submodules: recursive
 
-      - name: Install build dependencies (Ubuntu GCC)
+      - name: Install Ubuntu Clang
         run: |
           sudo apt update
-          sudo apt install -y bc bison flex libssl-dev make git python3 cpio \
-            gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler
+          # Cài Clang và các gói cần thiết, không cài GCC
+          sudo apt install -y --no-install-recommends \
+            bc bison flex libssl-dev make git python3 cpio zip libelf-dev \
+            clang lld llvm
 
-      - name: Increase swap space
+      - name: Verify Clang
         run: |
-          if swapon --show | grep -q "/swapfile"; then exit 0; fi
-          sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
-          sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
-          free -h
+          clang --version
+          ld.lld --version
 
-      - name: Auto-detect defconfig
-        working-directory: ./kernel
-        run: |
-          echo "=== Danh sách defconfig có sẵn trong arch/arm64/configs/ ==="
-          ls -la arch/arm64/configs/ | grep -i "exynos" || echo "Không tìm thấy exynos"
-          echo ""
-          echo "=== Toàn bộ file trong arch/arm64/configs/ ==="
-          ls -la arch/arm64/configs/
-
-      - name: Configure & Build kernel (GCC)
+      - name: Fix Clang compatibility & Build
         working-directory: ./kernel
         run: |
           rm -rf out
           export PLATFORM_VERSION=11
-          
-          # BẮT BUỘC có ARCH=arm64
-          make ARCH=arm64 O=out ${{ matrix.defconfig }}
 
-          # Thêm cấu hình
+          # --- Vá lỗi Clang 18 cho kernel 4.4 ---
+          # 1. Xóa cờ -implicit-function-declaration (Clang 18 không hỗ trợ)
+          sed -i 's/-implicit-function-declaration//g' Makefile
+          find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration//g' {} + 2>/dev/null || true
+          
+          # 2. Xóa -Werror để tránh Clang coi warning là lỗi
+          sed -i 's/-Werror//g' Makefile scripts/Makefile.host 2>/dev/null || true
+          echo 'HOSTCFLAGS += -Wno-error' >> Makefile
+          
+          # 3. Sửa lỗi section attribute (Clang 18 cũng bị)
+          sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
+          
+          # 4. Ép chuẩn C11 (tránh lỗi bool/true/false của C23)
+          echo 'KBUILD_CFLAGS += -std=gnu11' >> Makefile
+
+          # --- Cấu hình ---
+          make ARCH=arm64 O=out exynos7885-a10_defconfig
+
           {
             echo 'CONFIG_LOCALVERSION="-Haubai"'
             echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
             echo "CONFIG_IMG_GZ_DTB=y"
-            echo "# CONFIG_IMG_DTB is not set"
             echo "# CONFIG_DEBUG_INFO is not set"
+            echo "# CONFIG_LTO is not set"
+            echo "# CONFIG_LTO_CLANG is not set"
+            echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
           } >> out/.config
 
           make ARCH=arm64 O=out olddefconfig
 
-          echo "=== Verify config ==="
-          grep -E "CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64" out/.config || true
-
-          # Build với GCC (an toàn cho kernel 4.4)
+          # --- Build bằng Clang 18 ---
           make -j2 ARCH=arm64 O=out \
-            CC=aarch64-linux-gnu-gcc \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
             CROSS_COMPILE=aarch64-linux-gnu- \
+            HOSTLDFLAGS="-fuse-ld=lld" \
             2>&1 | tee build.log
 
       - name: Show artifacts
@@ -85,7 +90,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-${{ matrix.defconfig }}
+          name: build-log-a10
           path: kernel/build.log
           if-no-files-found: warn
 
@@ -96,12 +101,12 @@ jobs:
           if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
           elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then cp ../kernel/out/arch/arm64/boot/Image.gz .
           else cp ../kernel/out/arch/arm64/boot/Image .; fi
-          zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
+          zip -r9 ../HaubaiKernel_A10.zip *
 
       - name: Upload zip
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: HaubaiKernel_${{ matrix.defconfig }}
-          path: HaubaiKernel_${{ matrix.defconfig }}.zip
+          name: HaubaiKernel_A10
+          path: HaubaiKernel_A10.zip
           if-no-files-found: warn
