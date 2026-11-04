@@ -1,4 +1,4 @@
-name: Build Exynos7885 (EurekaV2 - Neutron Clang)
+name: Build Exynos7885 (EurekaV2 - Clang)
 on:
   workflow_dispatch:
 
@@ -21,62 +21,41 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y bc bison flex libssl-dev make git python3 cpio \
-            gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler
+            gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler \
+            clang lld llvm
 
-      - name: Setup Neutron Clang
+      - name: Verify Clang
         run: |
-          mkdir -p toolchain
-          cd toolchain
-          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S=10032024
-          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") --patch=glibc
-          cd ..
-          echo "$(pwd)/toolchain/bin" >> $GITHUB_PATH
+          clang --version
+          ld.lld --version
 
-      - name: Set environment (Neutron Clang)
-        run: |
-          {
-            echo "CC=clang"
-            echo "LD=ld.lld"
-            echo "AR=llvm-ar"
-            echo "NM=llvm-nm"
-            echo "OBJCOPY=llvm-objcopy"
-            echo "OBJDUMP=llvm-objdump"
-            echo "STRIP=llvm-strip"
-            echo "CROSS_COMPILE=aarch64-linux-gnu-"
-            echo "ARCH=arm64"
-            echo "HOSTLDFLAGS=-fuse-ld=lld"
-          } >> $GITHUB_ENV
-
-      - name: Fix Neutron Clang compatibility for kernel 4.4
-        working-directory: ./kernel
-        run: |
-          # 1. Xóa cờ -implicit-function-declaration (Neutron Clang 19 không hỗ trợ)
-          sed -i 's/-implicit-function-declaration//g' Makefile
-          find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration//g' {} + 2>/dev/null || true
-          
-          # 2. Xóa -Werror để tránh Clang coi warning là lỗi
-          sed -i 's/-Werror//g' Makefile scripts/Makefile.host 2>/dev/null || true
-          echo 'HOSTCFLAGS += -Wno-error' >> Makefile
-          
-          # 3. Sửa lỗi section attribute (Neutron Clang 19 cũng bị)
-          sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
-          
-          # 4. Ép chuẩn C11 (tránh lỗi bool/true/false của C23)
-          echo 'KBUILD_CFLAGS += -std=gnu11' >> Makefile
-          
-          # 5. Xóa cờ LTO của Clang (nếu có)
-          sed -i 's/-flto=thin//g; s/-flto=full//g; s/-flto=auto//g' Makefile
-          find . -name "Makefile*" -exec sed -i 's/-flto=thin//g' {} + 2>/dev/null || true
-
-      - name: Configure & Build (Neutron Clang)
+      - name: Fix Clang compatibility & Build
         working-directory: ./kernel
         run: |
           rm -rf out
+          mkdir -p out
           export PLATFORM_VERSION=11
 
-          # Cấu hình
-          make ARCH=arm64 O=out exynos7885-a10_defconfig
+          # --- Vá lỗi Clang 18 cho kernel 4.4 ---
+          sed -i 's/-implicit-function-declaration//g' Makefile
+          find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration//g' {} + 2>/dev/null || true
+          sed -i 's/-Werror//g' Makefile scripts/Makefile.host 2>/dev/null || true
+          echo 'HOSTCFLAGS += -Wno-error' >> Makefile
+          sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
+          echo 'KBUILD_CFLAGS += -std=gnu11' >> Makefile
 
+          # --- Copy file a10.config vào out/.config ---
+          if [ -f "a10.config" ]; then
+            cp a10.config out/.config
+          elif [ -f "arch/arm64/configs/a10.config" ]; then
+            cp arch/arm64/configs/a10.config out/.config
+          else
+            echo "ERROR: Không tìm thấy a10.config"
+            find . -name "*a10*" -o -name "*.config" | head -20
+            exit 1
+          fi
+
+          # Thêm các tùy chọn cần thiết
           {
             echo 'CONFIG_LOCALVERSION="-Haubai"'
             echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
@@ -84,19 +63,15 @@ jobs:
             echo "# CONFIG_DEBUG_INFO is not set"
             echo "# CONFIG_LTO is not set"
             echo "# CONFIG_LTO_CLANG is not set"
-            echo "# CONFIG_LTO_CLANG_THIN is not set"
-            echo "# CONFIG_THINLTO is not set"
             echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
-            echo "# CONFIG_FRAME_POINTER is not set"
-            echo "# CONFIG_ARM64_ERRATUM_843419 is not set"
           } >> out/.config
 
           make ARCH=arm64 O=out olddefconfig
 
           echo "=== Verify config ==="
-          grep -E "CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64|CONFIG_LTO|CONFIG_KSU" out/.config || true
+          grep -E "CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64|CONFIG_LTO" out/.config || true
 
-          # Build
+          # Build với Clang
           make -j2 ARCH=arm64 O=out \
             CC=clang \
             LD=ld.lld \
