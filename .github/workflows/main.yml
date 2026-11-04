@@ -1,4 +1,4 @@
-name: Build Exynos7885 (EurekaV2 - Ubuntu Clang)
+name: Build Exynos7885 (EurekaV2 - Neutron Clang)
 on:
   workflow_dispatch:
 
@@ -17,27 +17,40 @@ jobs:
           path: kernel
           submodules: recursive
 
-      - name: Install Ubuntu Clang
+      - name: Install build dependencies
         run: |
           sudo apt update
-          # Cài Clang và các gói cần thiết, không cài GCC
-          sudo apt install -y --no-install-recommends \
-            bc bison flex libssl-dev make git python3 cpio zip libelf-dev \
-            clang lld llvm
+          sudo apt install -y bc bison flex libssl-dev make git python3 cpio \
+            gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler
 
-      - name: Verify Clang
+      - name: Setup Neutron Clang
         run: |
-          clang --version
-          ld.lld --version
+          mkdir -p toolchain
+          cd toolchain
+          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S=10032024
+          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") --patch=glibc
+          cd ..
+          echo "$(pwd)/toolchain/bin" >> $GITHUB_PATH
 
-      - name: Fix Clang compatibility & Build
+      - name: Set environment (Neutron Clang)
+        run: |
+          {
+            echo "CC=clang"
+            echo "LD=ld.lld"
+            echo "AR=llvm-ar"
+            echo "NM=llvm-nm"
+            echo "OBJCOPY=llvm-objcopy"
+            echo "OBJDUMP=llvm-objdump"
+            echo "STRIP=llvm-strip"
+            echo "CROSS_COMPILE=aarch64-linux-gnu-"
+            echo "ARCH=arm64"
+            echo "HOSTLDFLAGS=-fuse-ld=lld"
+          } >> $GITHUB_ENV
+
+      - name: Fix Neutron Clang compatibility for kernel 4.4
         working-directory: ./kernel
         run: |
-          rm -rf out
-          export PLATFORM_VERSION=11
-
-          # --- Vá lỗi Clang 18 cho kernel 4.4 ---
-          # 1. Xóa cờ -implicit-function-declaration (Clang 18 không hỗ trợ)
+          # 1. Xóa cờ -implicit-function-declaration (Neutron Clang 19 không hỗ trợ)
           sed -i 's/-implicit-function-declaration//g' Makefile
           find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration//g' {} + 2>/dev/null || true
           
@@ -45,13 +58,23 @@ jobs:
           sed -i 's/-Werror//g' Makefile scripts/Makefile.host 2>/dev/null || true
           echo 'HOSTCFLAGS += -Wno-error' >> Makefile
           
-          # 3. Sửa lỗi section attribute (Clang 18 cũng bị)
+          # 3. Sửa lỗi section attribute (Neutron Clang 19 cũng bị)
           sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
           
           # 4. Ép chuẩn C11 (tránh lỗi bool/true/false của C23)
           echo 'KBUILD_CFLAGS += -std=gnu11' >> Makefile
+          
+          # 5. Xóa cờ LTO của Clang (nếu có)
+          sed -i 's/-flto=thin//g; s/-flto=full//g; s/-flto=auto//g' Makefile
+          find . -name "Makefile*" -exec sed -i 's/-flto=thin//g' {} + 2>/dev/null || true
 
-          # --- Cấu hình ---
+      - name: Configure & Build (Neutron Clang)
+        working-directory: ./kernel
+        run: |
+          rm -rf out
+          export PLATFORM_VERSION=11
+
+          # Cấu hình
           make ARCH=arm64 O=out exynos7885-a10_defconfig
 
           {
@@ -61,12 +84,19 @@ jobs:
             echo "# CONFIG_DEBUG_INFO is not set"
             echo "# CONFIG_LTO is not set"
             echo "# CONFIG_LTO_CLANG is not set"
+            echo "# CONFIG_LTO_CLANG_THIN is not set"
+            echo "# CONFIG_THINLTO is not set"
             echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
+            echo "# CONFIG_FRAME_POINTER is not set"
+            echo "# CONFIG_ARM64_ERRATUM_843419 is not set"
           } >> out/.config
 
           make ARCH=arm64 O=out olddefconfig
 
-          # --- Build bằng Clang 18 ---
+          echo "=== Verify config ==="
+          grep -E "CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64|CONFIG_LTO|CONFIG_KSU" out/.config || true
+
+          # Build
           make -j2 ARCH=arm64 O=out \
             CC=clang \
             LD=ld.lld \
