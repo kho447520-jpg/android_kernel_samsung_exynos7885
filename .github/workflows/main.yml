@@ -86,6 +86,9 @@ jobs:
           sed -i 's/obj-$(CONFIG_MALI_MIDGARD)/# obj-$(CONFIG_MALI_MIDGARD)/g' drivers/gpu/Makefile 2>/dev/null || true
           sed -i 's/obj-y.*arm/# obj-y arm/g' drivers/gpu/Makefile 2>/dev/null || true
 
+          # Sửa lỗi unknown type name 'intf' trong dummycon.c
+          sed -i 's/\bintf\b/int/g' drivers/video/console/dummycon.c
+
           # Copy file config vào out/.config
           cp arch/arm64/configs/${{ matrix.defconfig }} out/.config
 
