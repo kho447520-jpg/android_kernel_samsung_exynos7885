@@ -1,4 +1,4 @@
-name: Build EurekaV2 (R15-OneUI + BPF)
+name: Build EurekaV2 
 on:
   workflow_dispatch:
 
