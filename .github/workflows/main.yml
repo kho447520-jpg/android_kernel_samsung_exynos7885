@@ -42,6 +42,10 @@ jobs:
             exit 1
           fi
 
+          # --- Vô hiệu hóa SL_SOFTIRQ để tránh lỗi thiếu hàm ---
+          sed -i 's/^CONFIG_SL_SOFTIRQ=y/# CONFIG_SL_SOFTIRQ is not set/' out/.config
+          echo "# CONFIG_SL_SOFTIRQ is not set" >> out/.config
+
           # --- Thêm cấu hình cần thiết ---
           {
             echo 'CONFIG_LOCALVERSION="-Haubai"'
@@ -58,7 +62,7 @@ jobs:
           make ARCH=arm64 O=out olddefconfig
 
           echo "=== Verify config ==="
-          grep -E "CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64|CONFIG_LTO" out/.config || true
+          grep -E "CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64|CONFIG_LTO|CONFIG_SL_SOFTIRQ" out/.config || true
 
           # --- Build với GCC ---
           make -j2 ARCH=arm64 O=out \
