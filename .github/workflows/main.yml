@@ -46,6 +46,11 @@ jobs:
           sed -i 's/sl_softirq_entry(/\/\/ sl_softirq_entry(/g' kernel/softirq.c
           sed -i 's/sl_softirq_exit(/\/\/ sl_softirq_exit(/g' kernel/softirq.c
 
+          # --- Bật driver GPU Mali (nếu bị tắt trong a10.config) ---
+          echo "CONFIG_MALI_MIDGARD=y" >> out/.config
+          echo "CONFIG_MALI_PLATFORM_NAME=\"exynos\"" >> out/.config
+          echo "CONFIG_MALI_EXYNOS=y" >> out/.config
+
           # --- Thêm cấu hình cần thiết ---
           {
             echo 'CONFIG_LOCALVERSION="-Haubai"'
@@ -62,7 +67,7 @@ jobs:
           make ARCH=arm64 O=out olddefconfig
 
           echo "=== Verify config ==="
-          grep -E "CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64|CONFIG_LTO" out/.config || true
+          grep -E "CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64|CONFIG_LTO|CONFIG_MALI" out/.config || true
 
           # --- Build với GCC ---
           make -j2 ARCH=arm64 O=out \
