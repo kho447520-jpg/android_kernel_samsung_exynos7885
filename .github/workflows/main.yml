@@ -1,4 +1,4 @@
-name: Build EurekaV2
+name: Build EurekaV2 (GCC)
 on:
   workflow_dispatch:
 
@@ -28,15 +28,6 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: List available config files
-        working-directory: ./kernel
-        run: |
-          echo "=== Danh sách file trong arch/arm64/configs/ ==="
-          ls arch/arm64/configs/ | grep -i "a10\|a20\|a30\|a40" || echo "Không tìm thấy file cấu hình nào"
-          echo ""
-          echo "=== Tìm file có đuôi .config ==="
-          find arch/arm64/configs/ -name "*.config" | head -20
-
       - name: Set Git user
         working-directory: ./kernel
         run: |
@@ -59,31 +50,23 @@ jobs:
           echo "# CONFIG_KPROBES is not set" >> arch/arm64/configs/${{ matrix.defconfig }}
           tail -10 arch/arm64/configs/${{ matrix.defconfig }}
 
-      - name: Install build dependencies
+      - name: Install GCC (Ubuntu)
         run: |
           sudo apt update
-          sudo apt install -y bc bison flex libssl-dev make git python3 cpio \
-            gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler
+          sudo apt install -y --no-install-recommends \
+            bc bison flex libssl-dev make git python3 cpio zip libelf-dev \
+            gcc-aarch64-linux-gnu
 
-      - name: Setup Neutron Clang
-        run: |
-          mkdir -p toolchain
-          cd toolchain
-          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S=10032024
-          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") --patch=glibc
-          cd ..
-          echo "$(pwd)/toolchain/bin" >> $GITHUB_PATH
-
-      - name: Set environment
+      - name: Set environment (GCC)
         run: |
           {
-            echo "CC=clang"
-            echo "LD=ld.lld"
-            echo "AR=llvm-ar"
-            echo "NM=llvm-nm"
-            echo "OBJCOPY=llvm-objcopy"
-            echo "OBJDUMP=llvm-objdump"
-            echo "STRIP=llvm-strip"
+            echo "CC=aarch64-linux-gnu-gcc"
+            echo "LD=aarch64-linux-gnu-ld"
+            echo "AR=aarch64-linux-gnu-ar"
+            echo "NM=aarch64-linux-gnu-nm"
+            echo "OBJCOPY=aarch64-linux-gnu-objcopy"
+            echo "OBJDUMP=aarch64-linux-gnu-objdump"
+            echo "STRIP=aarch64-linux-gnu-strip"
             echo "CROSS_COMPILE=aarch64-linux-gnu-"
             echo "ARCH=arm64"
           } >> $GITHUB_ENV
@@ -91,17 +74,22 @@ jobs:
       - name: Fix source & Configure
         working-directory: ./kernel
         run: |
+          rm -rf out
+          mkdir -p out
           export PLATFORM_VERSION=11
           
           # Vô hiệu hóa sl_softirq trực tiếp trong source
           sed -i 's/sl_softirq_entry(/\/\/ sl_softirq_entry(/g' kernel/softirq.c
           sed -i 's/sl_softirq_exit(/\/\/ sl_softirq_exit(/g' kernel/softirq.c
 
+          # Vô hiệu hóa driver GPU trong Makefile (tránh lỗi thiếu built-in.o)
+          sed -i 's/obj-$(CONFIG_MALI_MIDGARD)/# obj-$(CONFIG_MALI_MIDGARD)/g' drivers/gpu/Makefile 2>/dev/null || true
+          sed -i 's/obj-y.*arm/# obj-y arm/g' drivers/gpu/Makefile 2>/dev/null || true
+
           # Copy file config vào out/.config
-          mkdir -p out
           cp arch/arm64/configs/${{ matrix.defconfig }} out/.config
 
-          # Sửa giá trị rỗng của TZDEV (nguyên nhân gây treo Kconfig)
+          # Sửa giá trị rỗng của TZDEV
           sed -i 's/^CONFIG_TZDEV_IWI_EVENT=.*/CONFIG_TZDEV_IWI_EVENT=0/' out/.config
           sed -i 's/^CONFIG_TZDEV_IWI_PANIC=.*/CONFIG_TZDEV_IWI_PANIC=0/' out/.config
           grep -q "^CONFIG_TZDEV_IWI_EVENT" out/.config || echo "CONFIG_TZDEV_IWI_EVENT=0" >> out/.config
@@ -128,6 +116,13 @@ jobs:
             CC=${CC} LD=${LD} AR=${AR} NM=${NM} \
             OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} STRIP=${STRIP} \
             CROSS_COMPILE=${CROSS_COMPILE} 2>&1 | tee build.log
+
+      - name: Show artifacts
+        if: always()
+        working-directory: ./kernel
+        run: |
+          [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
+          ls -la out/arch/arm64/boot/ || true
 
       - name: Upload build log
         if: always()
