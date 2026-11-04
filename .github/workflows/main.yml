@@ -1,4 +1,4 @@
-name: Build Exynos7885 (EurekaV2 - Clang)
+name: Build Exynos7885 (EurekaV2 - GCC)
 on:
   workflow_dispatch:
 
@@ -17,34 +17,21 @@ jobs:
           path: kernel
           submodules: recursive
 
-      - name: Install build dependencies
+      - name: Install GCC (Ubuntu)
         run: |
           sudo apt update
-          sudo apt install -y bc bison flex libssl-dev make git python3 cpio \
-            gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler \
-            clang lld llvm
+          sudo apt install -y --no-install-recommends \
+            bc bison flex libssl-dev make git python3 cpio zip libelf-dev \
+            gcc-aarch64-linux-gnu
 
-      - name: Verify Clang
-        run: |
-          clang --version
-          ld.lld --version
-
-      - name: Fix Clang compatibility & Build
+      - name: Configure & Build (GCC)
         working-directory: ./kernel
         run: |
           rm -rf out
           mkdir -p out
           export PLATFORM_VERSION=11
 
-          # --- Vá lỗi Clang 18 cho kernel 4.4 ---
-          sed -i 's/-implicit-function-declaration//g' Makefile
-          find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration//g' {} + 2>/dev/null || true
-          sed -i 's/-Werror//g' Makefile scripts/Makefile.host 2>/dev/null || true
-          echo 'HOSTCFLAGS += -Wno-error' >> Makefile
-          sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
-          echo 'KBUILD_CFLAGS += -std=gnu11' >> Makefile
-
-          # --- Copy file a10.config vào out/.config ---
+          # --- Copy file a10.config ---
           if [ -f "a10.config" ]; then
             cp a10.config out/.config
           elif [ -f "arch/arm64/configs/a10.config" ]; then
@@ -55,36 +42,28 @@ jobs:
             exit 1
           fi
 
-          # --- Thêm giá trị mặc định cho TZDEV và các cấu hình cần thiết ---
+          # --- Thêm cấu hình cần thiết ---
           {
-            echo 'CONFIG_TZDEV_IWI_EVENT=0'
-            echo 'CONFIG_TZDEV_IWI_PANIC=0'
             echo 'CONFIG_LOCALVERSION="-Haubai"'
             echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
             echo "CONFIG_IMG_GZ_DTB=y"
             echo "# CONFIG_DEBUG_INFO is not set"
             echo "# CONFIG_LTO is not set"
-            echo "# CONFIG_LTO_CLANG is not set"
             echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
+            echo "CONFIG_TZDEV_IWI_EVENT=0"
+            echo "CONFIG_TZDEV_IWI_PANIC=0"
           } >> out/.config
 
-          # Chạy olddefconfig để resolve các phụ thuộc
+          # Resolve dependencies
           make ARCH=arm64 O=out olddefconfig
 
           echo "=== Verify config ==="
-          grep -E "CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64|CONFIG_LTO|CONFIG_TZDEV" out/.config || true
+          grep -E "CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64|CONFIG_LTO" out/.config || true
 
-          # Build với Clang
+          # --- Build với GCC ---
           make -j2 ARCH=arm64 O=out \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
+            CC=aarch64-linux-gnu-gcc \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            HOSTLDFLAGS="-fuse-ld=lld" \
             2>&1 | tee build.log
 
       - name: Show artifacts
