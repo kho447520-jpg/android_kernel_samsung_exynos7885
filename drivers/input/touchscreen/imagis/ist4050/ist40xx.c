@@ -358,6 +358,29 @@ err_get_info:
 						(n & SPECIAL_MESSAGE_MASK) : -EINVAL)
 #define SPECIAL_START_MASK		(0x80)
 #define SPECIAL_SUCCESS_MASK		(0x0F)
+
+/*
+ * The "black UI" gesture key is an AOD/dozing input: SystemUI's
+ * SysUIKeyEventHandler only acts on it while the status bar is dozing, i.e.
+ * while the screen is off. The controller also reports FOD presses while the
+ * panel is on, and the key is then delivered to whichever app has focus -
+ * apps that treat it as a hardware button act on it. The KernelSU manager,
+ * for one, moves focus to its power button on the first press, opens the
+ * power menu on the second and activates "Reboot" on the third, so a finger
+ * on the FOD area reboots the device. Confine the key to LPM, where its only
+ * consumer lives.
+ */
+static void ist40xx_report_gesture_key(struct ist40xx_data *data)
+{
+	if (data->status.sys_mode != STATE_LPM)
+		return;
+
+	input_report_key(data->input_dev, KEY_BLACK_UI_GESTURE, true);
+	input_sync(data->input_dev);
+	input_report_key(data->input_dev, KEY_BLACK_UI_GESTURE, false);
+	input_sync(data->input_dev);
+}
+
 void ist40xx_special_cmd(struct ist40xx_data *data, int cmd)
 {
 	gesture_msg g_msg;
@@ -380,14 +403,7 @@ void ist40xx_special_cmd(struct ist40xx_data *data, int cmd)
 
 					input_info(true, &data->client->dev, "Swipe Up Trigger\n");
 
-					input_report_key(data->input_dev,
-							 KEY_BLACK_UI_GESTURE,
-							 true);
-					input_sync(data->input_dev);
-					input_report_key(data->input_dev,
-							 KEY_BLACK_UI_GESTURE,
-							 false);
-					input_sync(data->input_dev);
+					ist40xx_report_gesture_key(data);
 				}
 				break;
 			case G_TYPE_DOUBLETAP:
@@ -403,14 +419,7 @@ void ist40xx_special_cmd(struct ist40xx_data *data, int cmd)
 						   "Double Tap Trigger (%d, %d)\n",
 						   data->scrub_x, data->scrub_y);
 
-					input_report_key(data->input_dev,
-							 KEY_BLACK_UI_GESTURE,
-							 true);
-					input_sync(data->input_dev);
-					input_report_key(data->input_dev,
-							 KEY_BLACK_UI_GESTURE,
-							 false);
-					input_sync(data->input_dev);
+					ist40xx_report_gesture_key(data);
 				} else if (g_msg.b.gid == G_ID_DOUBLETAP_WAKEUP) {
 					input_info(true, &data->client->dev,
 							"AOT Double Tap Trigger\n");
@@ -447,14 +456,7 @@ void ist40xx_special_cmd(struct ist40xx_data *data, int cmd)
 						   "Single Tap Trigger (%d, %d)\n",
 						   data->scrub_x, data->scrub_y);
 
-					input_report_key(data->input_dev,
-							 KEY_BLACK_UI_GESTURE,
-							 true);
-					input_sync(data->input_dev);
-					input_report_key(data->input_dev,
-							 KEY_BLACK_UI_GESTURE,
-							 false);
-					input_sync(data->input_dev);
+					ist40xx_report_gesture_key(data);
 				}
 				break;
 			case G_TYPE_PRESSURE:
@@ -473,14 +475,7 @@ void ist40xx_special_cmd(struct ist40xx_data *data, int cmd)
 					input_info(true, &data->client->dev,
 						"FOD out\n");
 				}
-				input_report_key(data->input_dev,
-						 KEY_BLACK_UI_GESTURE,
-						 true);
-				input_sync(data->input_dev);
-				input_report_key(data->input_dev,
-						 KEY_BLACK_UI_GESTURE,
-						 false);
-				input_sync(data->input_dev);
+				ist40xx_report_gesture_key(data);
 				break;
 			default:
 				input_err(true, &data->client->dev,
@@ -1166,6 +1161,32 @@ static int ist40xx_suspend(struct device *dev)
 	cancel_delayed_work_sync(&data->work_force_release);
 #endif
 
+	/*
+	 * ET715 AOD wake fix (Derp).
+	 *
+	 * The AIDL fingerprint HAL on this ROM never issues the sec_touch
+	 * "fod_lp_mode" ioctl and never sets the IST40XX_FOD bit, so BOTH
+	 * lpm_mode and fod_lp_mode are 0 at screen-off. The condition below
+	 * therefore took the else branch, called ist40xx_power_off() and left
+	 * the touch IRQ unarmed: the controller was physically off, so a finger
+	 * on the AOD panel could not wake the device at all. Verified on device:
+	 * 0 occurrences of the driver's own "fod_lp_mode" marker in dmesg.
+	 *
+	 * When the DT says this panel supports under-display fingerprint, arm the
+	 * FOD report and push it into the IC so low-power touches actually reach
+	 * the CPU, then fall through to the LPM branch which enables gesture and
+	 * calls enable_irq_wake(). Done before mutex_lock() because
+	 * ist40xx_write_sponge_reg() may take the same lock internally.
+	 */
+	if (data->dt_data->support_fod && !(data->lpm_mode & IST40XX_FOD)) {
+		data->lpm_mode |= IST40XX_FOD;
+		ist40xx_write_sponge_reg(data, IST40XX_SPONGE_CTRL,
+					 (u16 *)&data->lpm_mode, 1, true);
+		input_info(true, &data->client->dev,
+			   "FOD_WAKE: armed IST40XX_FOD, lpm_mode=0x%04x\n",
+			   (unsigned int)data->lpm_mode);
+	}
+
 	mutex_lock(&data->lock);
 	if (data->lpm_mode || data->fod_lp_mode) {
 		ist40xx_disable_irq(data);
@@ -1177,6 +1198,10 @@ static int ist40xx_suspend(struct device *dev)
 		data->status.sys_mode = STATE_LPM;
 		ist40xx_enable_irq(data);
 	} else {
+		input_info(true, &data->client->dev,
+			   "FOD_WAKE: SUSPEND POWER-OFF lpm_mode=0x%04x fod_lp_mode=%d support_fod=%d\n",
+			   (unsigned int)data->lpm_mode, data->fod_lp_mode,
+			   data->dt_data->support_fod);
 		ist40xx_power_off(data);
 		ist40xx_disable_irq(data);
 		data->status.sys_mode = STATE_POWER_OFF;
@@ -2338,6 +2363,14 @@ static int ist40xx_probe(struct i2c_client *client,
 	ret = ist40xx_auto_bin_update(data);
 	if (ret == 0)
 		goto err_irq;
+
+	/*
+	 * request_threaded_irq() leaves the IRQ line enabled, but
+	 * irq_enabled was initialized to false.  Sync the flag before
+	 * ist40xx_get_info(), whose guarded disable/enable pair is only
+	 * balanced when the flag reflects the hardware state.
+	 */
+	data->irq_enabled = true;
 
 	ret = ist40xx_get_info(data);
 	input_info(true, &client->dev, "Get info: %s\n", (ret == 0 ? "success" : "fail"));

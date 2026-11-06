@@ -26,4 +26,10 @@
 	gpu_max_clock_limit = <676000>;
 	gpu_temp_throttling_level_num = <6>;
 	gpu_temp_throttling = <545000 453000 343000 343000 343000 343000>;
+	/* The Mali driver applies the eureka_gpu_* values (CONFIG_EUREKA_CUSTOM_DT_NODES);
+	 * give it this SoC's own Samsung values instead of the base DTB's overclock. */
+	eureka_gpu_max_clock = <676000>;
+	eureka_gpu_highspeed_clock = <450000>;
+	eureka_gpu_highspeed_load = <95>;
+	eureka_gpu_temp_throttling = <545000 453000 343000 343000 343000 343000>;
 };

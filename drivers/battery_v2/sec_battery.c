@@ -5026,13 +5026,9 @@ ssize_t sec_bat_show_attrs(struct device *dev,
 			(battery->cable_type == SEC_BATTERY_CABLE_HMT_CONNECTED) ? 1 : 0);
 		break;
 	case HMT_TA_CHARGE:
-#if defined(CONFIG_CCIC_NOTIFIER)
+		/* EurekaV3: the charge pause switch on every phone, see the store side */
 		i += scnprintf(buf + i, PAGE_SIZE - i, "%d\n",
 			(battery->current_event & SEC_BAT_CURRENT_EVENT_CHARGE_DISABLE) ? 0 : 1);
-#else
-		i += scnprintf(buf + i, PAGE_SIZE - i, "%d\n",
-			(battery->cable_type == SEC_BATTERY_CABLE_HMT_CHARGE) ? 1 : 0);
-#endif
 		break;
 #if defined(CONFIG_BATTERY_AGE_FORECAST)
 	case FG_CYCLE:
@@ -6055,7 +6051,14 @@ ssize_t sec_bat_store_attrs(
 		break;
 	case HMT_TA_CHARGE:
 		if (sscanf(buf, "%10d\n", &x) == 1) {
-#if defined(CONFIG_CCIC_NOTIFIER)
+			/*
+			 * EurekaV3: 0 pauses charging (charger off, buck on: the charger
+			 * keeps powering the phone and the battery is left alone), 1
+			 * resumes it, on every phone. Samsung did this only on CCIC
+			 * (USB-C) builds; micro-USB builds (A10) used the node to toggle
+			 * OTG power for Gear VR instead, which Android 16 has no use for.
+			 * The pause is cleared when the cable is unplugged.
+			 */
 			dev_info(battery->dev,
 					"%s: HMT_TA_CHARGE(%d)\n", __func__, x);
 
@@ -6077,39 +6080,6 @@ ssize_t sec_bat_store_attrs(
 						"%s: Wrong HMT control\n", __func__);
 			}
 			ret = count;
-#else
-			dev_info(battery->dev,
-					"%s: HMT_TA_CHARGE(%d)\n", __func__, x);
-			psy_do_property(battery->pdata->charger_name, get,
-					POWER_SUPPLY_PROP_CHARGE_OTG_CONTROL, value);
-			if (value.intval) {
-				dev_info(battery->dev,
-					"%s: ignore HMT_TA_CHARGE(%d)\n", __func__, x);
-			} else {
-				if (x) {
-					value.intval = false;
-					psy_do_property(battery->pdata->charger_name, set,
-							POWER_SUPPLY_PROP_CHARGE_OTG_CONTROL,
-							value);
-					dev_info(battery->dev,
-						"%s: changed to OTG cable detached\n", __func__);
-					battery->wire_status = SEC_BATTERY_CABLE_HMT_CHARGE;
-					wake_lock(&battery->cable_wake_lock);
-					queue_delayed_work(battery->monitor_wqueue, &battery->cable_work, 0);
-				} else {
-					value.intval = false;
-					psy_do_property(battery->pdata->charger_name, set,
-							POWER_SUPPLY_PROP_CHARGE_OTG_CONTROL,
-							value);
-					dev_info(battery->dev,
-							"%s: changed to OTG cable detached\n", __func__);
-					battery->wire_status = SEC_BATTERY_CABLE_HMT_CONNECTED;
-					wake_lock(&battery->cable_wake_lock);
-					queue_delayed_work(battery->monitor_wqueue, &battery->cable_work, 0);
-				}
-			}
-			ret = count;
-#endif
 		}
 		break;
 #if defined(CONFIG_BATTERY_AGE_FORECAST)

@@ -22,6 +22,7 @@
 #include <linux/spinlock.h>
 #include <linux/rcupdate.h>
 #include <linux/workqueue.h>
+#include <linux/close_range.h>
 
 int sysctl_nr_open __read_mostly = 1024*1024;
 int sysctl_nr_open_min = BITS_PER_LONG;
@@ -673,6 +674,83 @@ int __close_fd(struct files_struct *files, unsigned fd)
 out_unlock:
 	spin_unlock(&files->file_lock);
 	return -EBADF;
+}
+
+/**
+ * __close_range() - Close all file descriptors in a given range.
+ *
+ * @fd:     starting file descriptor to close
+ * @max_fd: last file descriptor to close
+ * @flags:  CLOSE_RANGE_UNSHARE, CLOSE_RANGE_CLOEXEC
+ *
+ * This closes a range of file descriptors. All file descriptors
+ * from @fd up to and including @max_fd are closed. With
+ * CLOSE_RANGE_CLOEXEC they are marked close-on-exec instead.
+ */
+int __close_range(unsigned int fd, unsigned int max_fd, unsigned int flags)
+{
+	unsigned int cur_max;
+	struct task_struct *me = current;
+	struct files_struct *cur_fds = me->files, *fds = NULL;
+
+	if (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC))
+		return -EINVAL;
+
+	if (fd > max_fd)
+		return -EINVAL;
+
+	if ((flags & CLOSE_RANGE_UNSHARE) && atomic_read(&cur_fds->count) > 1) {
+		int ret = 0;
+
+		/*
+		 * This kernel's dup_fd() always copies the whole table (no
+		 * max_fds argument), as unshare(CLONE_FILES) does here.
+		 */
+		fds = dup_fd(cur_fds, &ret);
+		if (!fds)
+			return ret;
+		/* work on the new private table; fds is the old shared one */
+		swap(cur_fds, fds);
+	}
+
+	if (flags & CLOSE_RANGE_CLOEXEC) {
+		struct fdtable *fdt;
+
+		/*
+		 * Mark the whole range, open or not: a slot that is opened
+		 * later gets its close-on-exec bit set or cleared by
+		 * __alloc_fd() / do_dup2() anyway.
+		 */
+		spin_lock(&cur_fds->file_lock);
+		fdt = files_fdtable(cur_fds);
+		cur_max = fdt->max_fds - 1;
+		max_fd = min(max_fd, cur_max);
+		if (fd <= max_fd)
+			bitmap_set(fdt->close_on_exec, fd, max_fd - fd + 1);
+		spin_unlock(&cur_fds->file_lock);
+	} else {
+		rcu_read_lock();
+		cur_max = files_fdtable(cur_fds)->max_fds - 1;
+		rcu_read_unlock();
+		max_fd = min(max_fd, cur_max);
+		while (fd <= max_fd) {
+			__close_fd(cur_fds, fd++);
+			cond_resched();
+		}
+	}
+
+	if (fds) {
+		/*
+		 * We're done closing the files we were supposed to. Time to
+		 * install the new file descriptor table and drop the old one.
+		 */
+		task_lock(me);
+		me->files = cur_fds;
+		task_unlock(me);
+		put_files_struct(fds);
+	}
+
+	return 0;
 }
 
 void do_close_on_exec(struct files_struct *files)

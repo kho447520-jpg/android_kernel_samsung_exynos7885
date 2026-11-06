@@ -645,6 +645,7 @@ struct decon_win_config {
 		DECON_WIN_STATE_COLOR,
 		DECON_WIN_STATE_BUFFER,
 		DECON_WIN_STATE_UPDATE,
+		DECON_WIN_STATE_CURSOR,
 		DECON_WIN_STATE_FINGERPRINT = 0x20000,
 	} state;
 
@@ -1086,6 +1087,7 @@ struct decon_device {
 
 #if defined(CONFIG_SUPPORT_MASK_LAYER)
 	bool current_mask_layer;
+	bool force_mask_layer;
 	struct decon_reg_data *mask_regs;
 	u32 wait_mask_layer_trigger;
 	wait_queue_head_t wait_mask_layer_trigger_queue;
@@ -1258,6 +1260,10 @@ int decon_create_vsync_thread(struct decon_device *decon);
 void decon_destroy_vsync_thread(struct decon_device *decon);
 int decon_create_psr_info(struct decon_device *decon);
 void decon_destroy_psr_info(struct decon_device *decon);
+#if defined(CONFIG_SUPPORT_MASK_LAYER)
+int decon_create_fingerprint_illum(struct decon_device *decon);
+int decon_fingerprint_illum_apply(struct decon_device *decon);
+#endif
 
 /* DECON to writeback interface functions */
 int decon_wb_register_irq(struct decon_device *decon);

@@ -1389,6 +1389,48 @@ static int decon_set_mask_layer(struct decon_device *decon, struct decon_reg_dat
 
 	return 1; /* return 1 for checking trigger done */
 }
+
+/*
+ * Apply decon->force_mask_layer to the panel now.
+ *
+ * decon_set_mask_layer() otherwise runs only from __decon_update_regs(), i.e.
+ * when a frame is submitted, so a write to fingerprint_illum would only arm the
+ * change. On a static screen no frame arrives and the panel stays at
+ * mask_brightness after the fingerprint HAL has released it. Both branches of
+ * the panel's mask_brightness op issue their own shadow update, so no frame is
+ * needed to drive the hardware.
+ *
+ * With the display not on there is no vsync and the panel is powered down, so
+ * the change is left to the next frame, which applies force_mask_layer through
+ * decon_get_mask_layer(). decon->lock serialises this against display on/off
+ * and against concurrent writes.
+ *
+ * fp_illum_regs is static, so the pointer the panel op reads through
+ * decon->mask_regs stays valid.
+ */
+static struct decon_reg_data fp_illum_regs;
+
+int decon_fingerprint_illum_apply(struct decon_device *decon)
+{
+	int ret;
+
+	if (decon->dt.out_type != DECON_OUT_DSI)
+		return 0;
+
+	mutex_lock(&decon->lock);
+	if (decon->state != DECON_STATE_ON) {
+		decon_info("fingerprint_illum: state %d != ON, deferring to next frame\n",
+				decon->state);
+		mutex_unlock(&decon->lock);
+		return 0;
+	}
+
+	fp_illum_regs.mask_layer = decon->force_mask_layer;
+	ret = decon_set_mask_layer(decon, &fp_illum_regs);
+	mutex_unlock(&decon->lock);
+
+	return ret;
+}
 #endif
 
 static void __decon_update_regs(struct decon_device *decon, struct decon_reg_data *regs)
@@ -1695,6 +1737,7 @@ static int decon_get_active_win_count(struct decon_device *decon,
 
 		case DECON_WIN_STATE_COLOR:
 		case DECON_WIN_STATE_BUFFER:
+		case DECON_WIN_STATE_CURSOR:
 			win_cnt++;
 			break;
 
@@ -1750,6 +1793,7 @@ static int decon_prepare_win_config(struct decon_device *decon,
 			ret = 0;
 			break;
 		case DECON_WIN_STATE_BUFFER:
+		case DECON_WIN_STATE_CURSOR:
 			if (decon_set_win_blocking_mode(decon, i, win_config, regs))
 				break;
 
@@ -1757,6 +1801,16 @@ static int decon_prepare_win_config(struct decon_device *decon,
 			ret = decon_set_win_buffer(decon, config, regs, i);
 			if (!ret)
 				color_map = false;
+
+			/*
+			 * A CURSOR window carries the input pointer sprite.
+			 * This display has no dedicated cursor plane, so
+			 * composite it as an ordinary buffer window and
+			 * normalise the state so every later consumer (BTS
+			 * accounting, event log, window-update bookkeeping)
+			 * sees one buffer semantics.
+			 */
+			config->state = DECON_WIN_STATE_BUFFER;
 			break;
 		default:
 			win_regs->wincon &= ~WIN_EN_F(i);
@@ -1797,7 +1851,7 @@ static bool decon_get_mask_layer(struct decon_device *decon,
 	struct decon_win_config_data *win_data)
 {
 	int i;
-	bool mask = false;
+	bool mask = decon->force_mask_layer;
 	struct decon_win_config *config;
 	struct decon_win_config *win_config = win_data->config;
 
@@ -1926,8 +1980,16 @@ static int decon_set_win_config(struct decon_device *decon,
 err_prepare:
 	if (win_data->fence >= 0) {
 		/* video mode should keep previous buffer object */
+		decon_err("%s: win config failed, ret=%d, tl=%d/%d, mode=%d\n",
+				__func__, ret, decon->timeline->value,
+				decon->timeline_max, decon->lcd_info->mode);
 		if (decon->lcd_info->mode == DECON_MIPI_COMMAND_MODE)
 			decon_signal_fence(decon);
+		else
+			/* config dropped: give back the value reserved by
+			 * decon_create_fence() so create/inc stay 1:1
+			 */
+			decon->timeline_max--;
 		sync_fence_put(fence);
 		put_unused_fd(win_data->fence);
 	}
@@ -2997,6 +3059,11 @@ static int decon_probe(struct platform_device *pdev)
 	ret = decon_register_subdevs(decon);
 	if (ret)
 		goto err_subdev;
+
+#if defined(CONFIG_SUPPORT_MASK_LAYER)
+	/* needs out_sd, which decon_register_subdevs() sets */
+	decon_create_fingerprint_illum(decon);
+#endif
 
 	ret = decon_acquire_windows(decon);
 	if (ret)

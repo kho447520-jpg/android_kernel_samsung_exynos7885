@@ -772,7 +772,9 @@
 
 			cpufreq {
 				domain@1 {
-					max-freq = <2184000>;
+					/* Samsung's limit for this phone's Exynos 7904 */
+					max-freq = <1768000>;
+					eureka_max-freq = <1768000>;
 				};
 			};
 

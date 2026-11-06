@@ -64,7 +64,16 @@ static int do_get_info(void __user *arg)
         cmd.flags |= KSU_GET_INFO_FLAG_LATE_LOAD;
     }
     cmd.features = KSU_FEATURE_MAX;
-    cmd.uapi_version = KERNEL_SU_UAPI_VERSION;
+    /*
+     * EurekaV3: report UAPI 5. The released managers (up to v3.4.2) speak
+     * UAPI 5 and hide Superuser and Modules unless the kernel reports exactly
+     * their version. UAPI 6 only adds KSU_GET_INFO_FLAG_PREINIT (never set
+     * here: this kernel is built without preinit) and KSU_IOCTL_LOOKUP_SYMBOLS
+     * (still served); everything a UAPI 5 manager uses is unchanged. Go back
+     * to KERNEL_SU_UAPI_VERSION once a released manager speaks UAPI 6.
+     */
+    cmd.uapi_version = 5;
+    BUILD_BUG_ON(KERNEL_SU_UAPI_VERSION != 6);
 
     if (copy_to_user(arg, &cmd, sizeof(cmd))) {
         pr_err("get_version: copy_to_user failed\n");

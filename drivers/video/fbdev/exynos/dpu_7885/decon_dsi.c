@@ -455,6 +455,65 @@ void decon_destroy_psr_info(struct decon_device *decon)
 	device_remove_file(decon->dev, &dev_attr_psr_info);
 }
 
+#if defined(CONFIG_SUPPORT_MASK_LAYER)
+/*
+ * fingerprint_illum: lets the fingerprint HAL of an under-display (optical)
+ * sensor switch the panel to mask brightness while a finger is on the sensor,
+ * the way Samsung's own framework does with a fingerprint window layer.
+ */
+static ssize_t decon_fingerprint_illum_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct decon_device *decon = dev_get_drvdata(dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", decon->force_mask_layer ? 1 : 0);
+}
+
+static ssize_t decon_fingerprint_illum_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct decon_device *decon = dev_get_drvdata(dev);
+	bool enable;
+	int ret;
+
+	ret = kstrtobool(buf, &enable);
+	if (ret)
+		return ret;
+
+	decon->force_mask_layer = enable;
+	decon_fingerprint_illum_apply(decon);
+
+	decon_info("fingerprint illumination (mask layer) %s by userspace\n",
+			enable ? "enabled" : "disabled");
+
+	return count;
+}
+static DEVICE_ATTR(fingerprint_illum, 0644, decon_fingerprint_illum_show,
+		decon_fingerprint_illum_store);
+
+int decon_create_fingerprint_illum(struct decon_device *decon)
+{
+	struct dsim_device *dsim;
+	int ret;
+
+	if (decon->dt.out_type != DECON_OUT_DSI || IS_ERR_OR_NULL(decon->out_sd[0]))
+		return 0;
+
+	/* only panels that can switch to mask brightness get the node */
+	dsim = container_of(decon->out_sd[0], struct dsim_device, sd);
+	if (!dsim->panel_ops || !dsim->panel_ops->mask_brightness)
+		return 0;
+
+	ret = device_create_file(decon->dev, &dev_attr_fingerprint_illum);
+	if (ret) {
+		decon_err("failed to create fingerprint_illum file\n");
+		return ret;
+	}
+
+	return 0;
+}
+#endif
+
 
 /* Framebuffer interface related callback functions */
 static u32 fb_visual(u32 bits_per_pixel, unsigned short palette_sz)

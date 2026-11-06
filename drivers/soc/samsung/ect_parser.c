@@ -564,16 +564,6 @@ static int ect_parse_ap_thermal_function(int parser_version, void *address, stru
 		ect_parse_integer(&address, &range->upper_bound_temperature);
 		ect_parse_integer(&address, &range->max_frequency);
 
-		// GPU
-		if (range->max_frequency == 1200000 || range->max_frequency == 1100000)
-			range->max_frequency = 1300000;
-		else if (range->max_frequency == 845000)
-			range->max_frequency = 1001000;
-		else if (range->max_frequency == 676000)
-			range->max_frequency = 845000;
-		else if (range->max_frequency == 450000)
-			range->max_frequency = 545000;
-
 #ifdef CONFIG_BYPASS_CPU_THROTTLING
 		if (range->max_frequency == 2496000 ||
 			range->max_frequency == 2392000 ||
