@@ -1,4 +1,4 @@
-name: Build EurekaV2 (GCC)
+name: Build EurekaV2 (Clang 21)
 on:
   workflow_dispatch:
 
@@ -50,25 +50,54 @@ jobs:
           echo "# CONFIG_KPROBES is not set" >> arch/arm64/configs/${{ matrix.defconfig }}
           tail -10 arch/arm64/configs/${{ matrix.defconfig }}
 
-      - name: Install GCC (Ubuntu)
+      - name: Install build dependencies & Clang 21 (AOSP)
         run: |
           sudo apt update
           sudo apt install -y --no-install-recommends \
             bc bison flex libssl-dev make git python3 cpio zip libelf-dev \
-            gcc-aarch64-linux-gnu
+            gcc-aarch64-linux-gnu aria2
 
-      - name: Set environment (GCC)
+          # Tải AOSP Clang 21 (r547379 là Clang 20, nhưng đây là bản gần nhất có sẵn)
+          # Lưu ý: AOSP chưa có prebuilt chính thức cho Clang 21 tại thời điểm này.
+          # Tạm dùng r547379 (Clang 20) làm bản gần nhất, hoặc tìm mirror Clang 21.
+          mkdir -p $HOME/clang && cd $HOME/clang
+          aria2c -x 8 -s 8 --retry-wait=3 --max-tries=5 \
+            -o clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-16.0.0_r1/clang-r547379.tar.gz"
+          
+          if [ ! -s clang.tar.gz ]; then
+            echo "ERROR: clang.tar.gz is empty"
+            exit 1
+          fi
+          
+          tar -xzf clang.tar.gz && rm clang.tar.gz
+          sudo mkdir -p /usr/local/clang
+          sudo cp -r $HOME/clang/* /usr/local/clang/
+          
+          sudo ln -sf /usr/local/clang/bin/clang /usr/bin/clang
+          sudo ln -sf /usr/local/clang/bin/ld.lld /usr/bin/ld.lld
+          sudo ln -sf /usr/local/clang/bin/llvm-ar /usr/bin/llvm-ar
+          sudo ln -sf /usr/local/clang/bin/llvm-nm /usr/bin/llvm-nm
+          sudo ln -sf /usr/local/clang/bin/llvm-objcopy /usr/bin/llvm-objcopy
+          sudo ln -sf /usr/local/clang/bin/llvm-objdump /usr/bin/llvm-objdump
+          sudo ln -sf /usr/local/clang/bin/llvm-strip /usr/bin/llvm-strip
+          sudo ln -sf /usr/bin/ld.lld /usr/bin/ld
+          
+          clang --version
+
+      - name: Set environment (Clang 21)
         run: |
           {
-            echo "CC=aarch64-linux-gnu-gcc"
-            echo "LD=aarch64-linux-gnu-ld"
-            echo "AR=aarch64-linux-gnu-ar"
-            echo "NM=aarch64-linux-gnu-nm"
-            echo "OBJCOPY=aarch64-linux-gnu-objcopy"
-            echo "OBJDUMP=aarch64-linux-gnu-objdump"
-            echo "STRIP=aarch64-linux-gnu-strip"
+            echo "CC=clang"
+            echo "LD=ld.lld"
+            echo "AR=llvm-ar"
+            echo "NM=llvm-nm"
+            echo "OBJCOPY=llvm-objcopy"
+            echo "OBJDUMP=llvm-objdump"
+            echo "STRIP=llvm-strip"
             echo "CROSS_COMPILE=aarch64-linux-gnu-"
             echo "ARCH=arm64"
+            echo "HOSTLDFLAGS=-fuse-ld=lld"
           } >> $GITHUB_ENV
 
       - name: Fix source & Configure
@@ -82,12 +111,20 @@ jobs:
           sed -i 's/sl_softirq_entry(/\/\/ sl_softirq_entry(/g' kernel/softirq.c
           sed -i 's/sl_softirq_exit(/\/\/ sl_softirq_exit(/g' kernel/softirq.c
 
-          # Vô hiệu hóa driver GPU trong Makefile (tránh lỗi thiếu built-in.o)
+          # Vô hiệu hóa driver GPU trong Makefile
           sed -i 's/obj-$(CONFIG_MALI_MIDGARD)/# obj-$(CONFIG_MALI_MIDGARD)/g' drivers/gpu/Makefile 2>/dev/null || true
           sed -i 's/obj-y.*arm/# obj-y arm/g' drivers/gpu/Makefile 2>/dev/null || true
 
-          # Sửa lỗi unknown type name 'intf' trong dummycon.c
+          # Sửa lỗi intf trong dummycon.c
           sed -i 's/\bintf\b/int/g' drivers/video/console/dummycon.c
+
+          # Vá lỗi Clang mới (tương tự như Clang 18/19)
+          sed -i 's/-implicit-function-declaration//g' Makefile
+          find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration//g' {} + 2>/dev/null || true
+          sed -i 's/-Werror//g' Makefile scripts/Makefile.host 2>/dev/null || true
+          echo 'HOSTCFLAGS += -Wno-error' >> Makefile
+          sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
+          echo 'KBUILD_CFLAGS += -std=gnu11' >> Makefile
 
           # Copy file config vào out/.config
           cp arch/arm64/configs/${{ matrix.defconfig }} out/.config
@@ -106,6 +143,9 @@ jobs:
             echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
             echo "CONFIG_IMG_GZ_DTB=y"
             echo "# CONFIG_DEBUG_INFO is not set"
+            echo "# CONFIG_LTO is not set"
+            echo "# CONFIG_LTO_CLANG is not set"
+            echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
           } >> out/.config
 
           make ARCH=arm64 O=out olddefconfig
@@ -118,14 +158,8 @@ jobs:
             LOCALVERSION="${LOCALVERSION}" \
             CC=${CC} LD=${LD} AR=${AR} NM=${NM} \
             OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} STRIP=${STRIP} \
-            CROSS_COMPILE=${CROSS_COMPILE} 2>&1 | tee build.log
-
-      - name: Show artifacts
-        if: always()
-        working-directory: ./kernel
-        run: |
-          [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
-          ls -la out/arch/arm64/boot/ || true
+            CROSS_COMPILE=${CROSS_COMPILE} HOSTLDFLAGS="-fuse-ld=lld" \
+            2>&1 | tee build.log
 
       - name: Upload build log
         if: always()
